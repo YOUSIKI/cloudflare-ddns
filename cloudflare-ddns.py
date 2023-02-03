@@ -8,9 +8,11 @@
 
 __version__ = "1.0.2"
 
+import ipaddress
 import json
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -56,6 +58,9 @@ def getIPs():
     global ipv4_enabled
     global ipv6_enabled
     global purgeUnknownRecords
+    global localInterface
+    if localInterface:
+        return getLocalIPs()
     if ipv4_enabled:
         try:
             a = requests.get(
@@ -96,6 +101,66 @@ def getIPs():
     return ips
 
 
+def getLocalIPs():
+    a = None
+    aaaa = None
+    global ipv4_enabled
+    global ipv6_enabled
+    global purgeUnknownRecords
+    global localInterface
+    output = subprocess.run("ifconfig", capture_output=True).stdout.decode("utf-8")
+    output = output.splitlines()
+    info = None
+    for i in range(len(output)):
+        if output[i].strip().startswith(localInterface):
+            info = output[i:i+3]
+            break
+    if ipv4_enabled and info is not None:
+        try:
+            line = info[1].strip()
+            assert line.startswith("inet addr:")
+            line = line[len("inet addr:"):]
+            a = line.strip().split()[0].strip()
+            ipaddress.ip_address(a)
+        except Exception:
+            a = None
+            global shown_ipv4_warning
+            if not shown_ipv4_warning:
+                shown_ipv4_warning = True
+                print("🧩 IPv4 not detected")
+            if purgeUnknownRecords:
+                deleteEntries("A")
+    if ipv6_enabled and info is not None:
+        try:
+            line = info[2].strip()
+            assert line.startswith("inet6 addr:")
+            line = line[len("inet6 addr:"):]
+            aaaa = line.strip().split()[0].strip()
+            aaaa = aaaa.split("/")[0].strip()
+            ipaddress.ip_address(aaaa)
+        except Exception:
+            aaaa = None
+            global shown_ipv6_warning
+            if not shown_ipv6_warning:
+                shown_ipv6_warning = True
+                print("🧩 IPv6 not detected")
+            if purgeUnknownRecords:
+                deleteEntries("AAAA")
+    ips = {}
+    if(a is not None):
+        ips["ipv4"] = {
+            "type": "A",
+            "ip": a
+        }
+    if(aaaa is not None):
+        ips["ipv6"] = {
+            "type": "AAAA",
+            "ip": aaaa
+        }
+    return ips
+
+
+ 
 def commitRecord(ip):
     global ttl
     for option in config["cloudflare"]:
@@ -209,6 +274,7 @@ if __name__ == '__main__':
     ipv4_enabled = True
     ipv6_enabled = True
     purgeUnknownRecords = False
+    localInterface = False 
 
     if sys.version_info < (3, 5):
         raise Exception("🐍 This script requires Python 3.5+")
@@ -244,6 +310,11 @@ if __name__ == '__main__':
         if ttl < 30:
             ttl = 30  #
             print("⚙️ TTL is too low - defaulting to 30 seconds")
+        try:
+            localInterface = config["localInterface"]
+        except:
+            localInterface = False
+            print("⚙️ No config detected for 'localInterface' - defaulting to False")
         if(len(sys.argv) > 1):
             if(sys.argv[1] == "--repeat"):
                 if ipv4_enabled and ipv6_enabled:
